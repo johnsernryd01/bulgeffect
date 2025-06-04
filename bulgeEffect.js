@@ -130,6 +130,7 @@ async function initBulgeEffect(canvas, imageUrl, scrollSensitivity = 0.25) {
 
   const tex = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true); // 👈 This flips the image
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
   gl.generateMipmap(gl.TEXTURE_2D);
 
@@ -162,7 +163,7 @@ async function initBulgeEffect(canvas, imageUrl, scrollSensitivity = 0.25) {
     gl.uniform1i(uTexture, 0);
     gl.uniform2f(uResolution, canvas.width, canvas.height);
     const scrollY = window.scrollY;
-    gl.uniform1f(uAmount, scrollY * scrollSensitivity * 0.001);
+    gl.uniform1f(uAmount, scrollY * scrollSensitivity * 0.01);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     requestAnimationFrame(render);
   }
