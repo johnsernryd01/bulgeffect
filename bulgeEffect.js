@@ -11,7 +11,7 @@ const WHEEL      = 0.05;   // wheel delta → target strength
 const LIMIT      = 0.35;     // absolute clamp |strength|
 const RISE_SPEED = 0.10;     // 0.1–0.3  “ease-out” toward new target
 const SPRING     = 0.10;     // spring stiffness back to 0
-const DAMP       = 0.85;     // damping (closer 1 = slower, <0.75 over-damped)
+const DAMP       = 0.95;     // damping (closer 1 = slower, <0.75 over-damped)
 /* ========================================================================= */
 
 const $      = (q,c=document)=>c.querySelectorAll(q);
