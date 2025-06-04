@@ -5,9 +5,9 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.155/build/three.module.js';
 
 /* feel */
-const WHEEL  = 0.001;  // wheel delta → strength
-const LIMIT  = 0.35;    // max |strength|
-const DECAY  = 0.1;     // 0.5 → halve per frame  (larger = faster snap)
+const WHEEL  = 0.009;  // wheel delta → strength
+const LIMIT  = 0.85;    // max |strength|
+const DECAY  = 0.01;     // 0.5 → halve per frame  (larger = faster snap)
 
 /* helpers */
 const $=(q,c=document)=>c.querySelectorAll(q);
