@@ -9,7 +9,7 @@ import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.155/build/three.mod
 /* ===== feel constants =================================================== */
 const WHEEL_GAIN = 0.004;   // wheel delta → target change
 const LIMIT      = 0.2;     // max absolute strength
-const TARGET_DECAY = 0.90;   // 0.90 → keep 90 % per frame  (fade to 0)
+const TARGET_DECAY = 0.60;   // 0.90 → keep 90 % per frame  (fade to 0)
 const SMOOTH       = 0.08;   // how fast curr chases target (0.02–0.08)
 /* ========================================================================= */
 
