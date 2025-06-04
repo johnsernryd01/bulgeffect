@@ -1,173 +1,99 @@
-/* =========================================================================
-   bulgeEffect.js — wheel-driven curved bulge / pinch   (2025-06-04 v16)
-   -------------------------------------------------------------------------
-   ✦ Wheel ↑  → bulge  (image puffs outward)
-   ✦ Wheel ↓  → pinch  (image pulls inward)
+/* ============================================================================
+   bulgeThree.js  –  Three.js-powered bulge / pinch on scroll direction
+   Inspired by Codrops article (June 2023)
+   ---------------------------------------------------------------------------
+   • wheel ↑ / scroll up    → bulge   (convex)
+   • wheel ↓ / scroll down  → pinch   (concave)
+============================================================================ */
 
-   Embed once:
-     <script type="module" src="https://cdn.jsdelivr.net/gh/you/repo@SHA/bulgeEffect.js?v=16"></script>
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.155/build/three.module.js';
 
-   Use anywhere:
-     <div data-effect="bulge"
-          data-src="https://yourcdn.com/photo.jpg"
-          style="width:100%;height:400px"></div>
-========================================================================= */
+/* settings – tweak feel here */
+const MAX_STRENGTH  = 0.4;   // safety clamp
+const WHEEL_FACTOR  = 0.0006;  // wheel delta → strength
+const RETURN_SPEED  = 0.1;   // lerp speed back to 0 each frame
 
-/* ── tweak for feel ───────────────────────────────────────────────────── */
-const WHEEL_SENS = 0.02;   // bigger  → stronger (demo strength)
-const FRICTION   = 0.92;   // 0.85 = loose spring, 0.95 = slow settle
-/* --------------------------------------------------------------------- */
+/* tiny utils */
+const $ = (q, c=document) => c.querySelectorAll(q);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const loadTex = url => new Promise((res, rej)=>{
+  new THREE.TextureLoader().load(url,res,undefined,rej);
+});
 
-/* shorthand helpers */
-const $      = (sel, ctx = document) => ctx.querySelectorAll(sel);
-const clamp  = (v, a, b) => Math.max(a, Math.min(b, v));
-const loadImg = src =>
-  new Promise((res, rej) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload  = () => res(img);
-    img.onerror = rej;
-    img.src     = src;
-  });
-const sh = (gl, type, src) => {
-  const s = gl.createShader(type);
-  gl.shaderSource(s, src);
-  gl.compileShader(s);
-  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
-    throw gl.getShaderInfoLog(s);
-  return s;
-};
-const pg = (gl, vs, fs) => {
-  const p = gl.createProgram();
-  gl.attachShader(p, vs);
-  gl.attachShader(p, fs);
-  gl.linkProgram(p);
-  if (!gl.getProgramParameter(p, gl.LINK_STATUS))
-    throw gl.getProgramInfoLog(p);
-  return p;
-};
-
-/* ── GLSL shaders ─────────────────────────────────────────────────────── */
-const VS = `#version 300 es
-precision mediump float;
-
-in  vec3 aVertexPosition;
-in  vec2 aTextureCoord;
-
-out vec2 vUV;
-
-uniform float uAmt;           // −1 .. +1
-uniform vec2  uRes;           // image resolution
-
-float ease(float t){
-  return t < 0.5
-    ? 2.0 * t * t
-    : -1.0 + (4.0 - 2.0 * t) * t;
-}
-
-vec3 warp(vec3 p){
-  float aspect = uRes.x / uRes.y;
-  vec2  v      = p.xy * vec2(aspect, 1.0);
-  float d      = length(v);
-  float t      = clamp(1.0 - d * 1.4, 0.0, 1.0);
-  float f      = ease(t) * uAmt * 3.0;   // ★ multiplier 3.0 (extra bold)
-  p.xy += p.xy * f;
-  p.z  -= f;
-  return p;
-}
-
-void main(){
-  vec3 pos = warp(aVertexPosition);
-  vUV = aTextureCoord;
-  gl_Position = vec4(pos, 1.0);
-}`;
-
-const FS = `#version 300 es
-precision mediump float;
-
-in  vec2 vUV;
+/* fragment shader – signed bulge/pinch field */
+const frag = `
 uniform sampler2D uTex;
-out vec4 color;
-
+uniform float     uStrength;
+varying vec2 vUv;
 void main(){
-  vec2 uv = vec2(vUV.x, 1.0 - vUV.y);  // flip Y
-  color   = texture(uTex, uv);
+  vec2 st      = vUv - 0.5;
+  float dist   = length(st);
+  float theta  = atan(st.y, st.x);
+  float radius = pow(dist, 1.0 + uStrength * 2.0);
+  vec2 uv      = vec2(cos(theta), sin(theta)) * radius + 0.5;
+  gl_FragColor = texture2D(uTex, uv);
 }`;
 
-/* ── initialise one element ───────────────────────────────────────────── */
-async function initBulge(el){
-  const src = el.dataset.src;
-  if(!src){ console.warn('[bulgeEffect] missing data-src', el); return; }
+/* simple plane geometry */
+const plane = new THREE.PlaneBufferGeometry(2,2,1,1);
 
-  const img = await loadImg(src);
+async function initBulgeDiv(div){
+  const imgURL   = div.dataset.img;
+  const maxLocal = parseFloat(div.dataset.strength || '0.15');
+  const strength = clamp(maxLocal, 0, MAX_STRENGTH);
 
-  /* canvas */
-  const cv = document.createElement('canvas');
-  cv.width  = img.width;
-  cv.height = img.height;
-  Object.assign(cv.style,{
-    position:'absolute', inset:0, width:'100%', height:'100%', zIndex:-1
+  const tex  = await loadTex(imgURL);
+  tex.minFilter = THREE.LinearFilter;
+
+  const mat  = new THREE.ShaderMaterial({
+    uniforms : { uTex:{value:tex}, uStrength:{value:0} },
+    vertexShader  : 'varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);} ',
+    fragmentShader: frag
   });
-  el.style.position = el.style.position || 'relative';
-  el.appendChild(cv);
 
-  /* WebGL2 */
-  const gl = cv.getContext('webgl2');
-  if(!gl){ console.warn('[bulgeEffect] WebGL2 not supported'); return; }
+  const mesh = new THREE.Mesh(plane, mat);
 
-  const prog = pg(gl,
-    sh(gl, gl.VERTEX_SHADER,   VS),
-    sh(gl, gl.FRAGMENT_SHADER, FS)
-  );
-  gl.useProgram(prog);
+  /* scene */
+  const scene  = new THREE.Scene();
+  const cam    = new THREE.OrthographicCamera(-1,1,1,-1,0,1);
+  scene.add(mesh);
 
-  /* quad buffer */
-  const verts = new Float32Array([
-    -1,-1,0,  0,0,
-     1,-1,0,  1,0,
-    -1, 1,0,  0,1,
-     1, 1,0,  1,1,
-  ]);
-  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
-  gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
-  const STRIDE = 5 * 4;
-  const locPos = gl.getAttribLocation(prog,'aVertexPosition');
-  const locUV  = gl.getAttribLocation(prog,'aTextureCoord');
-  gl.enableVertexAttribArray(locPos);
-  gl.vertexAttribPointer(locPos, 3, gl.FLOAT, false, STRIDE, 0);
-  gl.enableVertexAttribArray(locUV);
-  gl.vertexAttribPointer(locUV,  2, gl.FLOAT, false, STRIDE, 12);
+  /* renderer */
+  const ren = new THREE.WebGLRenderer({alpha:true,antialias:true});
+  ren.setPixelRatio(window.devicePixelRatio);
+  const resize = ()=>{
+    const w = div.clientWidth;
+    const h = div.clientHeight;
+    ren.setSize(w,h,false);
+  };
+  window.addEventListener('resize', resize);
+  resize();
 
-  /* texture */
-  const tex = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
-  gl.generateMipmap(gl.TEXTURE_2D);
-  gl.uniform1i(gl.getUniformLocation(prog,'uTex'), 0);
-  gl.uniform2f(gl.getUniformLocation(prog,'uRes'), cv.width, cv.height);
-  const uAmt = gl.getUniformLocation(prog,'uAmt');
+  /* insert canvas */
+  ren.domElement.style.position='absolute';
+  ren.domElement.style.inset='0';
+  ren.domElement.style.zIndex='-1';
+  div.style.position='relative';
+  div.appendChild(ren.domElement);
 
-  /* wheel-controlled amount */
-  let amt = 0;
-  window.addEventListener('wheel', e => {
-    amt += (-e.deltaY) * WHEEL_SENS;     // wheel up = negative deltaY → bulge
-    amt  = clamp(amt, -1, 1);
-  }, { passive:true });
+  /* wheel-controlled signed amount */
+  let target = 0;
+  window.addEventListener('wheel', e=>{
+    target += (-e.deltaY) * WHEEL_FACTOR;
+    target  = clamp(target, -strength, strength);
+  }, {passive:true});
 
-  /* render loop */
-  (function loop(){
-    amt *= FRICTION;                     // ease back toward 0
-    gl.viewport(0, 0, cv.width, cv.height);
-    gl.uniform1f(uAmt, amt);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    requestAnimationFrame(loop);
-  })();
+  /* RAF */
+  const tick = ()=>{
+    /* smooth return */
+    mat.uniforms.uStrength.value += (target - mat.uniforms.uStrength.value) * RETURN_SPEED;
+    ren.render(scene, cam);
+    requestAnimationFrame(tick);
+  };
+  tick();
 }
 
-/* ── auto-init ─────────────────────────────────────────────────────────── */
-window.addEventListener('DOMContentLoaded', () => {
-  console.log('[bulgeEffect] file loaded – initializing …');
-  $('div[data-effect="bulge"]').forEach(initBulge);
+/* auto-init */
+window.addEventListener('DOMContentLoaded', ()=>{
+  document.querySelectorAll('[data-bulge]').forEach(initBulgeDiv);
 });
