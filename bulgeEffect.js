@@ -1,30 +1,20 @@
-/* =========================================================================
-   bulgeThree.js — Three.js r155  |  wheel-driven curved bulge / pinch
-   -------------------------------------------------------------------------
-   1) Put one <script type="module" src="…/bulgeThree.js?v=2"></script>
-   2) Add divs like:
-        <div data-bulge
-             data-img="https://yourcdn.com/photo.jpg"
-             data-strength="0.15"
-             style="width:100%;height:400px"></div>
-============================================================================ */
-
+/* bulgeThree.js – v3  (extra debug + CORS note) */
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.155/build/three.module.js';
 
-/* — tweak here — */
-const MAX_STRENGTH = 0.40;   // absolute safety cap
-const WHEEL_FACTOR = 0.0006; // deltaY → strength
-const RETURN_SPEED = 0.10;   // lerp back to 0
+const MAX_STRENGTH = 0.40;
+const WHEEL_FACTOR = 0.0006;
+const RETURN_SPEED = 0.10;
 
 /* helpers */
-const $ = (sel, ctx = document) => ctx.querySelectorAll(sel);
-const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-const loadTex = url =>
-  new Promise((res, rej) =>
-    new THREE.TextureLoader().load(url, res, undefined, rej)
-  );
+const $ = (q,c=document)=>c.querySelectorAll(q);
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const loadTex=url=>new Promise((res,rej)=>{
+  new THREE.TextureLoader()
+    .setCrossOrigin('anonymous')
+    .load(url,tex=>{ console.log('[bulge] Loaded OK', url); res(tex); },
+                undefined,err=>{ console.warn('[bulge] Texture load FAILED', url); rej(err); });
+});
 
-/* fragment shader (signed bulge/pinch) */
 const FRAG = `
 uniform sampler2D uTex;
 uniform float     uStrength;
@@ -32,77 +22,54 @@ varying vec2 vUv;
 void main(){
   vec2 st      = vUv - 0.5;
   float dist   = length(st);
-  float theta  = atan(st.y, st.x);
-  float radius = pow(dist, 1.0 + uStrength * 2.0);
-  vec2 uv      = vec2(cos(theta), sin(theta)) * radius + 0.5;
+  float theta  = atan(st.y,st.x);
+  float radius = pow(dist, 1.0 + uStrength*2.0);
+  vec2 uv      = vec2(cos(theta),sin(theta))*radius + 0.5;
   gl_FragColor = texture2D(uTex, uv);
 }`;
 
-/* shared plane geometry */
-const PLANE = new THREE.PlaneGeometry(2, 2);
+const PLANE = new THREE.PlaneGeometry(2,2);
 
-async function initBulge(el) {
-  const imgURL   = el.dataset.img;
-  const localMax = clamp(parseFloat(el.dataset.strength || '0.15'), 0, MAX_STRENGTH);
-  if (!imgURL) { console.warn('[bulge] missing data-img:', el); return; }
+async function initBulge(el){
+  const url = el.dataset.img;
+  if(!url){ console.warn('[bulge] missing data-img'); return; }
 
-  /* load texture */
-  const tex = await loadTex(imgURL);
+  let tex;
+  try{ tex = await loadTex(url); }
+  catch(e){ el.style.background='pink'; return; }   // visual error marker
+
   tex.minFilter = THREE.LinearFilter;
-  tex.generateMipmaps = false;
 
-  /* material with shader */
   const mat = new THREE.ShaderMaterial({
-    uniforms: {
-      uTex:      { value: tex },
-      uStrength: { value: 0   }
-    },
-    vertexShader  : 'varying vec2 vUv; void main(){vUv=uv;gl_Position=vec4(position,1.);}',
-    fragmentShader: FRAG
+    uniforms:{uTex:{value:tex},uStrength:{value:0}},
+    vertexShader:'varying vec2 vUv; void main(){vUv=uv;gl_Position=vec4(position,1.);}',
+    fragmentShader:FRAG
   });
 
-  /* scene setup */
   const scene = new THREE.Scene();
-  const cam   = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   scene.add(new THREE.Mesh(PLANE, mat));
+  const cam = new THREE.OrthographicCamera(-1,1,1,-1,0,1);
 
-  /* renderer */
-  const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
-  renderer.setPixelRatio(window.devicePixelRatio);
-  const resize = () => {
-    renderer.setSize(el.clientWidth, el.clientHeight, false);
-  };
-  window.addEventListener('resize', resize);
-  resize();
+  const ren = new THREE.WebGLRenderer({alpha:true,antialias:true});
+  ren.setPixelRatio(window.devicePixelRatio);
+  const fit = ()=>ren.setSize(el.clientWidth||2, el.clientHeight||2, false);
+  window.addEventListener('resize',fit); fit();
 
-  /* mount canvas */
-  Object.assign(renderer.domElement.style, {
-    position: 'absolute',
-    inset:    0,
-    width:    '100%',
-    height:   '100%',
-    zIndex:   -1
-  });
-  el.style.position = el.style.position || 'relative';
-  el.appendChild(renderer.domElement);
+  Object.assign(ren.domElement.style,{position:'absolute',inset:0,width:'100%',height:'100%',zIndex:-1});
+  el.style.position=el.style.position||'relative';
+  el.appendChild(ren.domElement);
 
-  /* wheel-driven signed amount */
-  let target = 0;
-  window.addEventListener('wheel', e => {
-    target += (-e.deltaY) * WHEEL_FACTOR;
-    target  = clamp(target, -localMax, localMax);
-  }, { passive: true });
+  let tgt=0;
+  window.addEventListener('wheel',e=>{
+    tgt += (-e.deltaY)*WHEEL_FACTOR;
+    tgt  = clamp(tgt, -MAX_STRENGTH, MAX_STRENGTH);
+  },{passive:true});
 
-  /* RAF loop */
-  const tick = () => {
-    mat.uniforms.uStrength.value += (target - mat.uniforms.uStrength.value) * RETURN_SPEED;
-    renderer.render(scene, cam);
-    requestAnimationFrame(tick);
-  };
-  tick();
+  (function loop(){
+    mat.uniforms.uStrength.value += (tgt - mat.uniforms.uStrength.value)*RETURN_SPEED;
+    ren.render(scene, cam);
+    requestAnimationFrame(loop);
+  })();
 }
 
-/* auto-init */
-window.addEventListener('DOMContentLoaded', () => {
-  $('div[data-bulge]').forEach(initBulge);
-});
+window.addEventListener('DOMContentLoaded',()=>$('div[data-bulge]').forEach(initBulge));
