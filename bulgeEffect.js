@@ -1,49 +1,48 @@
-/* bulgeThree.js – v3  (extra debug + CORS note) */
+/* bulge.js  – “active-only” version  (v17)
+   Shows bulge / pinch **during** wheel events, quickly resets when idle.
+*/
+
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.155/build/three.module.js';
 
-const MAX_STRENGTH = 0.40;
-const WHEEL_FACTOR = 0.0006;
-const RETURN_SPEED = 0.10;
+/* feel */
+const WHEEL  = 0.0006;  // wheel delta → strength
+const LIMIT  = 0.25;    // max |strength|
+const DECAY  = 0.5;     // 0.5 → halve per frame  (larger = faster snap)
 
 /* helpers */
-const $ = (q,c=document)=>c.querySelectorAll(q);
+const $=(q,c=document)=>c.querySelectorAll(q);
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
-const loadTex=url=>new Promise((res,rej)=>{
-  new THREE.TextureLoader()
-    .setCrossOrigin('anonymous')
-    .load(url,tex=>{ console.log('[bulge] Loaded OK', url); res(tex); },
-                undefined,err=>{ console.warn('[bulge] Texture load FAILED', url); rej(err); });
-});
+const load=(u)=>new Promise((res,rej)=>new THREE.TextureLoader()
+  .setCrossOrigin('anonymous').load(u,res,undefined,rej));
 
-const FRAG = `
+/* shader */
+const frag = `
 uniform sampler2D uTex;
-uniform float     uStrength;
+uniform float     uS;
 varying vec2 vUv;
 void main(){
-  vec2 st      = vUv - 0.5;
-  float dist   = length(st);
-  float theta  = atan(st.y,st.x);
-  float radius = pow(dist, 1.0 + uStrength*2.0);
-  vec2 uv      = vec2(cos(theta),sin(theta))*radius + 0.5;
+  vec2 st  = vUv - 0.5;
+  float d  = length(st);
+  float t  = atan(st.y,st.x);
+  float r  = pow(d, 1.0 + uS*2.0);
+  vec2 uv  = vec2(cos(t),sin(t))*r + 0.5;
   gl_FragColor = texture2D(uTex, uv);
 }`;
 
 const PLANE = new THREE.PlaneGeometry(2,2);
 
-async function initBulge(el){
+async function init(el){
   const url = el.dataset.img;
   if(!url){ console.warn('[bulge] missing data-img'); return; }
 
   let tex;
-  try{ tex = await loadTex(url); }
-  catch(e){ el.style.background='pink'; return; }   // visual error marker
-
+  try{ tex = await load(url); }catch{ el.style.background='#f88'; return; }
   tex.minFilter = THREE.LinearFilter;
 
   const mat = new THREE.ShaderMaterial({
-    uniforms:{uTex:{value:tex},uStrength:{value:0}},
+    uniforms:{uTex:{value:tex},uS:{value:0}},
     vertexShader:'varying vec2 vUv; void main(){vUv=uv;gl_Position=vec4(position,1.);}',
-    fragmentShader:FRAG
+    fragmentShader:frag
   });
 
   const scene = new THREE.Scene();
@@ -51,25 +50,26 @@ async function initBulge(el){
   const cam = new THREE.OrthographicCamera(-1,1,1,-1,0,1);
 
   const ren = new THREE.WebGLRenderer({alpha:true,antialias:true});
-  ren.setPixelRatio(window.devicePixelRatio);
-  const fit = ()=>ren.setSize(el.clientWidth||2, el.clientHeight||2, false);
+  ren.setPixelRatio(devicePixelRatio);
+  const fit=()=>ren.setSize(el.clientWidth||2,el.clientHeight||2,false);
   window.addEventListener('resize',fit); fit();
 
   Object.assign(ren.domElement.style,{position:'absolute',inset:0,width:'100%',height:'100%',zIndex:-1});
   el.style.position=el.style.position||'relative';
   el.appendChild(ren.domElement);
 
-  let tgt=0;
+  /* pulse strength */
+  let s = 0;
   window.addEventListener('wheel',e=>{
-    tgt += (-e.deltaY)*WHEEL_FACTOR;
-    tgt  = clamp(tgt, -MAX_STRENGTH, MAX_STRENGTH);
+    s = clamp((-e.deltaY)*WHEEL, -LIMIT, LIMIT);   // fresh pulse each tick
   },{passive:true});
 
   (function loop(){
-    mat.uniforms.uStrength.value += (tgt - mat.uniforms.uStrength.value)*RETURN_SPEED;
+    mat.uniforms.uS.value = s;
+    s *= DECAY;                     // quick fade when idle
     ren.render(scene, cam);
     requestAnimationFrame(loop);
   })();
 }
 
-window.addEventListener('DOMContentLoaded',()=>$('div[data-bulge]').forEach(initBulge));
+window.addEventListener('DOMContentLoaded',()=>$('div[data-bulge]').forEach(init));
