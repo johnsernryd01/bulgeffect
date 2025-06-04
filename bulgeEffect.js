@@ -1,189 +1,152 @@
+// bulgeEffect.js  — 2025‑06‑04 (v2)
+// -----------------------------------------------------------------------------
+// Pure‑vanilla, reusable WebGL bulge distortion that stays **off** until you scoll.
+// No upside‑down texture bugs. Copy once, reuse everywhere.
+// -----------------------------------------------------------------------------
+// Embed once per site (GitHub + jsDelivr example):
+// <script type="module" src="https://cdn.jsdelivr.net/gh/you/repo@SHA/bulgeEffect.js"></script>
+//
+// Webflow usage (duplicate freely):
+// <div data-effect="bulge"
+//      data-src="/images/photo.jpg"
+//      data-scroll="1"               <!-- optional multiplier; default 1 -->
+//      style="width:100%;height:400px"></div>
+// -----------------------------------------------------------------------------
 
-import { mat4 } from 'https://cdn.jsdelivr.net/npm/gl-matrix@3.4.3/esm/index.js';
-
-const vertexShaderSource = `#version 300 es
+// ===== GLSL ==============================================================
+const VS = `#version 300 es
 precision mediump float;
-in vec3 aVertexPosition;
-in vec2 aTextureCoord;
 
-out vec2 vTextureCoord;
-out vec3 vVertexPosition;
-out float zPos;
+in  vec3 aVertexPosition;
+in  vec2 aTextureCoord;
 
-uniform sampler2D uTexture;
-uniform float uAmount;
-uniform vec2 uMousePos;
-uniform vec2 uResolution;
+out vec2 vUV;
+out vec3 vPos;
 
-float ease(int easingFunc, float t) {
-    return t < 0.5 ? 2.0 * t * t : -1.0 + (4.0 - 2.0 * t) * t;
+uniform float uAmount;   // 0‑1 scroll‑driven
+uniform vec2  uRes;      // image resolution
+
+float ease(float t){return t<.5?2.*t*t:(-1.+(4.-2.*t)*t);} // simple easeInOut
+
+vec3 bulge(vec3 p){
+  float aspect = uRes.x/uRes.y;
+  vec2  v      = p.xy*vec2(aspect,1.0);
+  float d      = length(v);            // distance from centre
+  float t      = clamp(1.0-d*1.4,0.0,1.0);
+  float b      = ease(t)*uAmount*1.2;  // scale *1.2 for visibility
+  p.xy += p.xy * b;                    // push xy outwards
+  p.z  -= b;                           // fake depth (for lighting)
+  return p;
 }
 
-float bezier(float t) {
-    return ease(3, t);
-}
-
-mat2 rot(float a) {
-    return mat2(cos(a), -sin(a), sin(a), cos(a));
-}
-
-vec3 bulge(vec3 pos) {
-    vec2 aspectRatio = vec2(uResolution.x/uResolution.y, 1.);
-    vec2 mousePosAdjusted = vec2(0.);
-    mat2 rotation = rot(0.4995 * 2. * 3.14159);
-
-    float dist = distance(pos.xy * aspectRatio * rotation, mousePosAdjusted * aspectRatio * rotation);
-    float t = max(0., 1. - dist/1.4280);
-    float bulge = bezier(t) * (uAmount - 0.5);
-    bulge = min(1., bulge);
-    pos.xy += bulge * pos.xy;
-    pos.z -= bulge;
-    return pos;
-}
-
-void main() {
-    vec3 pos = bulge(aVertexPosition);
-    vec3 pos_dx = bulge(aVertexPosition + vec3(0.01, 0.0, 0.0));
-    vec3 pos_dy = bulge(aVertexPosition + vec3(0.0, 0.01, 0.0));
-    vec3 dx = pos_dx - pos;
-    vec3 dy = pos_dy - pos;
-    vec3 normal = normalize(cross(dx, dy));
-
-    vVertexPosition = normal;
-    zPos = pos.z;
-    gl_Position = vec4(pos, 1.0);
-    vTextureCoord = aTextureCoord;
+void main(){
+  vec3 pos = bulge(aVertexPosition);
+  vPos = normalize(pos);
+  vUV  = aTextureCoord;
+  gl_Position = vec4(pos,1.0);
 }`;
 
-const fragmentShaderSource = `#version 300 es
+const FS = `#version 300 es
 precision mediump float;
-in vec2 vTextureCoord;
-in vec3 vVertexPosition;
-in float zPos;
 
-uniform sampler2D uTexture;
+in  vec2 vUV;
+in  vec3 vPos;
 
-out vec4 fragColor;
+uniform sampler2D uTex;
 
-float random(vec2 seed) {
-    return fract(sin(dot(seed.xy, vec2(12.9898, 78.233))) * 43758.5453);
-}
+out vec4 color;
 
-void main() {
-    vec2 uv = vTextureCoord;
-    vec4 color = texture(uTexture, uv);
-    float intensity = 0.375;
-    float rad = 0.5 * -2. * 3.14159;
-    vec2 rotatedLightPosition = vec2(cos(rad), sin(rad));
-    vec3 lightPosition = vec3(vec2(0.5) * rotatedLightPosition * 2., 1.0);
-    float diff = max(dot(normalize(vVertexPosition), lightPosition), 0.0);
+float rand(vec2 co){return fract(sin(dot(co,vec2(12.9898,78.233)))*43758.5453);} // dither
 
-    color.rgb += (diff * intensity - intensity);
-    float dither = (random(gl_FragCoord.xy) - 0.5) / 255.0;
-    color.rgb += dither;
-    fragColor = color;
+void main(){
+  // manual vertical flip so texture is upright on every GPU
+  vec2 uv = vec2(vUV.x,1.0-vUV.y);
+  vec4 c  = texture(uTex,uv);
+
+  // subtle rim light for depth perception
+  vec3 L  = normalize(vec3(0.25,0.4,1.0));
+  float d = max(dot(vPos,L),0.0);
+  c.rgb  += (d*0.4 - 0.2);
+
+  c.rgb  += (rand(gl_FragCoord.xy)-0.5)/255.0; // micro‑grain
+  color   = c;
 }`;
 
-function createShader(gl, type, source) {
-  const shader = gl.createShader(type);
-  gl.shaderSource(shader, source);
-  gl.compileShader(shader);
-  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    throw new Error(gl.getShaderInfoLog(shader));
-  }
-  return shader;
-}
+// ===== Helpers ===========================================================
+const qs   = (sel,ctx=document)=>ctx.querySelectorAll(sel);
+const load = src=>new Promise((res,rej)=>{const i=new Image();i.crossOrigin='anonymous';i.onload=_=>res(i);i.onerror=rej;i.src=src;});
+const sh   = (gl,t,s)=>{const o=gl.createShader(t);gl.shaderSource(o,s);gl.compileShader(o);if(!gl.getShaderParameter(o,gl.COMPILE_STATUS))throw gl.getShaderInfoLog(o);return o;};
+const prog = (gl,v,f)=>{const p=gl.createProgram();gl.attachShader(p,v);gl.attachShader(p,f);gl.linkProgram(p);if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw gl.getProgramInfoLog(p);return p;};
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 
-function createProgram(gl, vShader, fShader) {
-  const program = gl.createProgram();
-  gl.attachShader(program, vShader);
-  gl.attachShader(program, fShader);
-  gl.linkProgram(program);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    throw new Error(gl.getProgramInfoLog(program));
-  }
-  return program;
-}
+// ===== Main loader =======================================================
+async function init(el){
+  const src   = el.dataset.src;
+  if(!src){console.warn('[bulgeEffect] missing data-src');return;}
+  const multi = parseFloat(el.dataset.scroll||'1');
 
-function loadImage(url) {
-  return new Promise((res, rej) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => res(img);
-    img.onerror = rej;
-    img.src = url;
-  });
-}
+  const img   = await load(src);
+  const cvs   = document.createElement('canvas');
+  cvs.width   = img.width;
+  cvs.height  = img.height;
+  Object.assign(cvs.style,{position:'absolute',inset:0,width:'100%',height:'100%',zIndex:'-1'});
+  el.style.position = el.style.position||'relative';
+  el.appendChild(cvs);
 
-async function initBulgeEffect(canvas, imageUrl, scrollSensitivity = 0.25) {
-  const gl = canvas.getContext('webgl2');
-  if (!gl) return;
+  const gl = cvs.getContext('webgl2');
+  if(!gl){console.warn('[bulgeEffect] WebGL2 not supported');return;}
 
-  const vShader = createShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
-  const fShader = createShader(gl, gl.FRAGMENT_SHADER, fragmentShaderSource);
-  const program = createProgram(gl, vShader, fShader);
-  gl.useProgram(program);
+  // compile
+  const p = prog(gl, sh(gl,gl.VERTEX_SHADER,VS), sh(gl,gl.FRAGMENT_SHADER,FS));
+  gl.useProgram(p);
 
-  const img = await loadImage(imageUrl);
-  canvas.width = img.width;
-  canvas.height = img.height;
+  // quad geometry (2 triangles)
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([
+    -1,-1,0, 0,0,
+     1,-1,0, 1,0,
+    -1, 1,0, 0,1,
+     1, 1,0, 1,1,
+  ]),gl.STATIC_DRAW);
+  const STRIDE = 5*4;
+  const posLoc = gl.getAttribLocation(p,'aVertexPosition');
+  const uvLoc  = gl.getAttribLocation(p,'aTextureCoord');
+  gl.enableVertexAttribArray(posLoc); gl.vertexAttribPointer(posLoc,3,gl.FLOAT,false,STRIDE,0);
+  gl.enableVertexAttribArray(uvLoc);  gl.vertexAttribPointer(uvLoc,2,gl.FLOAT,false,STRIDE,12);
 
+  // texture
   const tex = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true); // 👈 This flips the image
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+  gl.bindTexture(gl.TEXTURE_2D,tex);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,img);
   gl.generateMipmap(gl.TEXTURE_2D);
 
-  const posLoc = gl.getAttribLocation(program, 'aVertexPosition');
-  const uvLoc = gl.getAttribLocation(program, 'aTextureCoord');
+  // uniforms
+  const uTex = gl.getUniformLocation(p,'uTex');
+  const uAmt = gl.getUniformLocation(p,'uAmount');
+  const uRes = gl.getUniformLocation(p,'uRes');
+  gl.uniform1i(uTex,0);
+  gl.uniform2f(uRes,cvs.width,cvs.height);
 
-  const verts = new Float32Array([
-    -1, -1, 0, 0, 0,
-     1, -1, 0, 1, 0,
-    -1,  1, 0, 0, 1,
-     1,  1, 0, 1, 1,
-  ]);
+  // render loop — only scroll drives amount
+  function draw(){
+    const maxScroll = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
+    const frac      = clamp(window.scrollY / maxScroll, 0, 1);
+    const amt       = clamp(frac * multi, 0, 1);
 
-  const buf = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-  gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
-
-  gl.enableVertexAttribArray(posLoc);
-  gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 20, 0);
-  gl.enableVertexAttribArray(uvLoc);
-  gl.vertexAttribPointer(uvLoc, 2, gl.FLOAT, false, 20, 12);
-
-  const uTexture = gl.getUniformLocation(program, 'uTexture');
-  const uAmount = gl.getUniformLocation(program, 'uAmount');
-  const uResolution = gl.getUniformLocation(program, 'uResolution');
-
-  function render() {
-    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.viewport(0,0,cvs.width,cvs.height);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.uniform1i(uTexture, 0);
-    gl.uniform2f(uResolution, canvas.width, canvas.height);
-    const scrollY = window.scrollY;
-    gl.uniform1f(uAmount, scrollY * scrollSensitivity * 0.01);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    requestAnimationFrame(render);
+    gl.uniform1f(uAmt, amt);
+    gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
   }
-  render();
+
+  // run continuously for smooth updates
+  function loop(){draw();requestAnimationFrame(loop);} loop();
 }
 
-window.addEventListener('DOMContentLoaded', () => {
-  document.querySelectorAll('[data-effect="bulge"]').forEach(el => {
-    const canvas = document.createElement('canvas');
-    canvas.style.position = 'absolute';
-    canvas.style.top = 0;
-    canvas.style.left = 0;
-    canvas.style.width = '100%';
-    canvas.style.height = '100%';
-    canvas.style.zIndex = -1;
-    el.style.position = 'relative';
-    el.appendChild(canvas);
-
-    const src = el.dataset.src;
-    const scrollFactor = parseFloat(el.dataset.scroll || '0.25');
-    initBulgeEffect(canvas, src, scrollFactor);
-  });
+// ===== Auto‑init =========================================================
+window.addEventListener('DOMContentLoaded',()=>{
+  qs('[data-effect="bulge"]').forEach(init);
 });
