@@ -163,7 +163,9 @@ async function initBulgeEffect(canvas, imageUrl, scrollSensitivity = 0.25) {
     gl.uniform1i(uTexture, 0);
     gl.uniform2f(uResolution, canvas.width, canvas.height);
     const scrollY = window.scrollY;
-    gl.uniform1f(uAmount, scrollY * scrollSensitivity * 0.01);
+    const base = 0.3;
+    const amount = Math.min(1.0, base + scrollY * scrollSensitivity * 0.01);
+    gl.uniform1f(uAmount, amount);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     requestAnimationFrame(render);
   }
