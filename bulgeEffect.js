@@ -1,4 +1,3 @@
-// bulgeEffect.js — updated to only distort on scroll and confirm scroll reads
 
 import { mat4 } from 'https://cdn.jsdelivr.net/npm/gl-matrix@3.4.3/esm/index.js';
 
@@ -13,6 +12,7 @@ out float zPos;
 
 uniform sampler2D uTexture;
 uniform float uAmount;
+uniform vec2 uMousePos;
 uniform vec2 uResolution;
 
 float ease(int easingFunc, float t) {
@@ -70,7 +70,7 @@ float random(vec2 seed) {
 }
 
 void main() {
-    vec2 uv = vec2(vTextureCoord.x, 1.0 - vTextureCoord.y); // Manual vertical flip
+    vec2 uv = vTextureCoord;
     vec4 color = texture(uTexture, uv);
     float intensity = 0.375;
     float rad = 0.5 * -2. * 3.14159;
@@ -130,7 +130,7 @@ async function initBulgeEffect(canvas, imageUrl, scrollSensitivity = 0.25) {
 
   const tex = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true); // 👈 This flips the image
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
   gl.generateMipmap(gl.TEXTURE_2D);
 
@@ -158,22 +158,15 @@ async function initBulgeEffect(canvas, imageUrl, scrollSensitivity = 0.25) {
   const uResolution = gl.getUniformLocation(program, 'uResolution');
 
   function render() {
-    const scrollY = window.scrollY;
-    const amount = Math.min(1.0, scrollY * scrollSensitivity * 0.01);
-
     gl.viewport(0, 0, canvas.width, canvas.height);
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.uniform1i(uTexture, 0);
     gl.uniform2f(uResolution, canvas.width, canvas.height);
-    gl.uniform1f(uAmount, amount);
+    const scrollY = window.scrollY;
+    gl.uniform1f(uAmount, scrollY * scrollSensitivity * 0.01);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     requestAnimationFrame(render);
   }
-
-  window.addEventListener('scroll', () => {
-    requestAnimationFrame(render);
-  });
-
   render();
 }
 
