@@ -1,41 +1,41 @@
-// bulgeffect.js – fabric‑style bulge + pinch (FIXED outward bulge)
-// Drop into your repo and load as a module in Webflow
-//  <script type="module" src="https://cdn.jsdelivr.net/gh/USER/REPO/bulgeffect.js"></script>
-//  <div data-bulge data-img="/path/to/image.jpg"></div>
+// bulgeffect.js – v3 (radial displacement fix)
+// Fabric‑style bulge now visibly pushes OUT; pinch still pulls in.
 
 import * as THREE from 'https://unpkg.com/three@0.163.0/build/three.module.js';
 
-// === CONFIG ===
-const PLANE_SEGMENTS  = 32;   // mesh resolution (higher = smoother)
-const SCROLL_STRENGTH = 0.003; // wheel delta → velocity scalar
-const FRICTION        = 0.88; // 0‑1   (higher = snappier return)
-const EASE            = 0.12; // uniform lerp smoothing
+// ===== CONFIG =====
+const PLANE_SEGMENTS  = 40;    // finer grid for smoother curve
+const SCROLL_STRENGTH = 0.003; // wheel delta multiplier
+const FRICTION        = 0.88;  // snap‑back rate
+const EASE            = 0.12;  // uniform easing
+const AMPLITUDE       = 0.25;  // max outward offset in clip‑space units (0‑1)
 
-// === SHADERS ===
-// Vertex shader — *new radial‑scale approach* so centre actually pushes OUT when uS>0.
+// ===== SHADERS =====
+// Vertex shader – true radial displacement. Centre stays, everything else moves
+// along its own outward normal so the outline visibly bows.
 const VERT = /* glsl */`
-  uniform float uS;           // eased scroll strength (‑1…+1)
+  uniform float uS;           // eased velocity (−1 … +1)
   varying vec2 vUv;
   void main() {
     vUv = uv;
-    vec3 pos = position;
+    vec3 pos = position;      // plane vertex −1…+1 after modelViewMatrix
 
-    // Radial distance from centre, mapped so corner ≈1.0
-    vec2  c = vUv - 0.5;
-    float r = length(c) * 1.414;   // √2 → 1 at corners
+    // UV centre‑based coords (−.5…+.5)
+    vec2 c = vUv - 0.5;
+    float r = length(c);
 
-    // Weight: 1 at centre, 0 at border (smooth fall‑off)
-    float w = clamp(1.0 - r, 0.0, 1.0);
+    // Weight fades to 0 at ~corner radius .707 (half‑diagonal)
+    float w = clamp(1.0 - r * 1.42, 0.0, 1.0); // corners get 0, centre 1
+    vec2 dir = normalize(c + 1e-6);           // outward unit vector
 
-    // Scale positions about centre: bulge (uS>0) or pinch (uS<0)
-    float scale = 1.0 + uS * w;
-    pos.xy *= scale;
+    // Radial offset – positive uS pushes out, negative pulls in
+    pos.xy += dir * uS * w * AMPLITUDE;
 
     gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
   }
 `;
 
-// Fragment shader — same as before; keeps texture warp synced with uS
+// Fragment shader – same radial warp for texture for consistency
 const FRAG = /* glsl */`
   precision highp float;
   uniform sampler2D uTex;
@@ -44,12 +44,12 @@ const FRAG = /* glsl */`
   void main() {
     vec2 uv = vUv - 0.5;
     float d = length(uv);
-    vec2 warped = uv + uv * uS * 0.6 * (1.0 - d);
+    vec2 warped = uv + uv * uS * 0.55 * (1.0 - d);
     gl_FragColor = texture2D(uTex, warped + 0.5);
   }
 `;
 
-// === CLASS ===
+// ===== CLASS =====
 class BulgeEffect {
   constructor(el) {
     this.el = el;
@@ -61,9 +61,9 @@ class BulgeEffect {
     el.style.position = 'relative';
     el.appendChild(this.renderer.domElement);
 
-    // Scene & camera
+    // Scene & camera (slightly larger frustum for overshoot)
     this.scene  = new THREE.Scene();
-    this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 10);
+    this.camera = new THREE.OrthographicCamera(-1.2, 1.2, 1.2, -1.2, 0, 10);
     this.camera.position.z = 2;
 
     // Geometry & material
@@ -81,21 +81,18 @@ class BulgeEffect {
     this.scene.add(this.mesh);
 
     // Motion state
-    this.vel  = 0.0; // scroll velocity accumulator
-    this.curr = 0.0; // eased value sent to shader
+    this.vel  = 0.0;
+    this.curr = 0.0;
 
     // Event bindings
-    this.onWheel  = this.onWheel.bind(this);
-    this.onResize = this.onResize.bind(this);
-
-    window.addEventListener('wheel',   this.onWheel, { passive: true });
-    window.addEventListener('resize',  this.onResize);
+    window.addEventListener('wheel',  e => this.onWheel(e), { passive: true });
+    window.addEventListener('resize', () => this.onResize());
 
     this.onResize();
     this.animate();
   }
 
-  // --- Events ---
+  // --- Handlers ---
   onResize() {
     const { width, height } = this.el.getBoundingClientRect();
     this.renderer.setSize(width, height);
@@ -103,23 +100,24 @@ class BulgeEffect {
 
   onWheel(e) {
     this.vel += e.deltaY * SCROLL_STRENGTH;
-    this.vel = Math.max(Math.min(this.vel, 1), -1); // clamp
+    this.vel = Math.max(Math.min(this.vel, 1), -1);
   }
 
   // --- RAF loop ---
   animate() {
     requestAnimationFrame(() => this.animate());
 
-    // Friction toward zero (snap‑back)
+    // Decay velocity → snap back
     this.vel *= FRICTION;
 
-    // Ease uniform toward velocity
+    // Ease toward current velocity
     this.curr += (this.vel - this.curr) * EASE;
     this.material.uniforms.uS.value = this.curr;
 
-    // Only re‑render when something actually changed (micro‑optimisation)
-    if (Math.abs(this.vel) < 0.0001 && Math.abs(this.curr) < 0.0001) return;
-    this.render();
+    // Redraw when active
+    if (Math.abs(this.vel) > 0.0001 || Math.abs(this.curr) > 0.0001) {
+      this.render();
+    }
   }
 
   render() {
@@ -127,13 +125,13 @@ class BulgeEffect {
   }
 }
 
-// === INIT ===
-function initBulges() {
+// ===== INIT =====
+function initBulgeEffects() {
   document.querySelectorAll('[data-bulge]').forEach(el => {
     if (!el._bulge) el._bulge = new BulgeEffect(el);
   });
 }
 
 document.readyState === 'loading'
-  ? document.addEventListener('DOMContentLoaded', initBulges)
-  : initBulges();
+  ? document.addEventListener('DOMContentLoaded', initBulgeEffects)
+  : initBulgeEffects();
