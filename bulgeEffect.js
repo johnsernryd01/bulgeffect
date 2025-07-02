@@ -1,46 +1,41 @@
-// bulgeffect.js – scroll‑responsive fabric‑like bulge & pinch (updated)
-// Drop into your repo and load as a module in Webflow.
-// USAGE (unchanged):
-//   <div data-bulge data-img="/path/to/image.jpg"></div>
-//   <script type="module" src="https://cdn.rawgit.com/USER/bulgeffect/main/bulgeffect.js"></script>
-//   That’s it.
+// bulgeffect.js – fabric‑style bulge + pinch (FIXED outward bulge)
+// Drop into your repo and load as a module in Webflow
+//  <script type="module" src="https://cdn.jsdelivr.net/gh/USER/REPO/bulgeffect.js"></script>
+//  <div data-bulge data-img="/path/to/image.jpg"></div>
 
 import * as THREE from 'https://unpkg.com/three@0.163.0/build/three.module.js';
 
-// ====== TUNABLE CONSTANTS ======
-const PLANE_SEGMENTS   = 32;   // mesh resolution (X & Y)
-const SCROLL_STRENGTH  = 0.003; // how much each wheel delta affects velocity
-const FRICTION         = 0.88; // decay applied every frame (snaps back when idle)
-const EASE             = 0.12; // smoothing for the shader uniform
+// === CONFIG ===
+const PLANE_SEGMENTS  = 32;   // mesh resolution (higher = smoother)
+const SCROLL_STRENGTH = 0.003; // wheel delta → velocity scalar
+const FRICTION        = 0.88; // 0‑1   (higher = snappier return)
+const EASE            = 0.12; // uniform lerp smoothing
 
-// ====== SHADERS ======
-// Vertex shader – warps the rectangle itself so the OUTLINE flexes.
-// Positive uS ⇒ bulge outward. Negative uS ⇒ pinch inward.
+// === SHADERS ===
+// Vertex shader — *new radial‑scale approach* so centre actually pushes OUT when uS>0.
 const VERT = /* glsl */`
-  uniform float uS;           // current scroll strength (-1…+1)
+  uniform float uS;           // eased scroll strength (‑1…+1)
   varying vec2 vUv;
   void main() {
     vUv = uv;
     vec3 pos = position;
 
-    // Centered UV (‑0.5…+0.5) – defines radial direction
-    vec2 c = vUv - 0.5;
-    float r = length(c) * 1.414;      // √2≈1.414 maps corner to ~1.0
+    // Radial distance from centre, mapped so corner ≈1.0
+    vec2  c = vUv - 0.5;
+    float r = length(c) * 1.414;   // √2 → 1 at corners
 
-    // Bulge amount tapers to 0.0 at the edges; strongest in centre
-    float amt = uS * (1.0 - r);
+    // Weight: 1 at centre, 0 at border (smooth fall‑off)
+    float w = clamp(1.0 - r, 0.0, 1.0);
 
-    // Radial displacement: push/pull along vec2 c direction
-    pos.xy += c * amt;
-
-    // OPTIONAL slight Z push for parallax depth (comment if not desired)
-    // pos.z += abs(uS) * (1.0 - r) * 0.15;
+    // Scale positions about centre: bulge (uS>0) or pinch (uS<0)
+    float scale = 1.0 + uS * w;
+    pos.xy *= scale;
 
     gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
   }
 `;
 
-// Fragment shader – retains original image‑space distortion so the texture ALSO warps.
+// Fragment shader — same as before; keeps texture warp synced with uS
 const FRAG = /* glsl */`
   precision highp float;
   uniform sampler2D uTex;
@@ -49,14 +44,12 @@ const FRAG = /* glsl */`
   void main() {
     vec2 uv = vUv - 0.5;
     float d = length(uv);
-    float strength = uS * 0.6;
-    vec2 distorted = uv + uv * strength * (1.0 - d);
-    vec3 color = texture2D(uTex, distorted + 0.5).rgb;
-    gl_FragColor = vec4(color, 1.0);
+    vec2 warped = uv + uv * uS * 0.6 * (1.0 - d);
+    gl_FragColor = texture2D(uTex, warped + 0.5);
   }
 `;
 
-// ====== CLASS ======
+// === CLASS ===
 class BulgeEffect {
   constructor(el) {
     this.el = el;
@@ -68,7 +61,7 @@ class BulgeEffect {
     el.style.position = 'relative';
     el.appendChild(this.renderer.domElement);
 
-    // Scene / Camera
+    // Scene & camera
     this.scene  = new THREE.Scene();
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 10);
     this.camera.position.z = 2;
@@ -78,10 +71,7 @@ class BulgeEffect {
     const tex  = new THREE.TextureLoader().load(this.imgURL, () => this.render());
 
     this.material = new THREE.ShaderMaterial({
-      uniforms: {
-        uTex: { value: tex },
-        uS:   { value: 0.0 }
-      },
+      uniforms: { uTex: { value: tex }, uS: { value: 0.0 } },
       vertexShader: VERT,
       fragmentShader: FRAG,
       transparent: true
@@ -91,21 +81,21 @@ class BulgeEffect {
     this.scene.add(this.mesh);
 
     // Motion state
-    this.vel  = 0.0; // scroll velocity
-    this.curr = 0.0; // eased uniform value
+    this.vel  = 0.0; // scroll velocity accumulator
+    this.curr = 0.0; // eased value sent to shader
 
-    // Bindings
+    // Event bindings
     this.onWheel  = this.onWheel.bind(this);
     this.onResize = this.onResize.bind(this);
 
-    window.addEventListener('wheel', this.onWheel, { passive: true });
-    window.addEventListener('resize', this.onResize);
+    window.addEventListener('wheel',   this.onWheel, { passive: true });
+    window.addEventListener('resize',  this.onResize);
 
     this.onResize();
     this.animate();
   }
 
-  // ---- Events ----
+  // --- Events ---
   onResize() {
     const { width, height } = this.el.getBoundingClientRect();
     this.renderer.setSize(width, height);
@@ -113,24 +103,22 @@ class BulgeEffect {
 
   onWheel(e) {
     this.vel += e.deltaY * SCROLL_STRENGTH;
-    // Clamp velocity to reasonable bounds
-    this.vel = Math.max(Math.min(this.vel, 1), -1);
+    this.vel = Math.max(Math.min(this.vel, 1), -1); // clamp
   }
 
-  // ---- RAF ----
+  // --- RAF loop ---
   animate() {
     requestAnimationFrame(() => this.animate());
 
-    // Apply friction so effect snaps back when not scrolling
+    // Friction toward zero (snap‑back)
     this.vel *= FRICTION;
 
-    // Ease shader uniform toward current velocity
+    // Ease uniform toward velocity
     this.curr += (this.vel - this.curr) * EASE;
     this.material.uniforms.uS.value = this.curr;
 
-    // Don't waste GPU if negligible movement
-    if (Math.abs(this.curr) < 0.0001 && Math.abs(this.vel) < 0.0001) return;
-
+    // Only re‑render when something actually changed (micro‑optimisation)
+    if (Math.abs(this.vel) < 0.0001 && Math.abs(this.curr) < 0.0001) return;
     this.render();
   }
 
@@ -139,15 +127,13 @@ class BulgeEffect {
   }
 }
 
-// ====== INIT ======
-function initBulgeEffects() {
+// === INIT ===
+function initBulges() {
   document.querySelectorAll('[data-bulge]').forEach(el => {
     if (!el._bulge) el._bulge = new BulgeEffect(el);
   });
 }
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', initBulgeEffects);
-} else {
-  initBulgeEffects();
-}
+document.readyState === 'loading'
+  ? document.addEventListener('DOMContentLoaded', initBulges)
+  : initBulges();
