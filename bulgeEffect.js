@@ -1,73 +1,81 @@
-// bulgeffect.js – drop this in your project root and import as a module in Webflow.
-// It preserves the original scroll‑responsive bulge texture distortion and now ALSO bends
-// the geometry itself so the rectangle flexes like fabric.
-// USAGE (Webflow):
-// 1. Upload this file to GitHub (same repo) and reference via a <script type="module" src="https://cdn.rawgit.com/USERNAME/bulgeffect/main/bulgeffect.js"></script>
-// 2. Wrap any image in a div with data-bulge and set data-img="yourImageURL".
-//    <div class="bulge" data-bulge data-img="/assets/hero.jpg"></div>
-// 3. That´s it – the effect is modular & reusable. Works with any aspect ratio.
+// bulgeffect.js – scroll‑responsive fabric‑like bulge & pinch (updated)
+// Drop into your repo and load as a module in Webflow.
+// USAGE (unchanged):
+//   <div data-bulge data-img="/path/to/image.jpg"></div>
+//   <script type="module" src="https://cdn.rawgit.com/USER/bulgeffect/main/bulgeffect.js"></script>
+//   That’s it.
 
 import * as THREE from 'https://unpkg.com/three@0.163.0/build/three.module.js';
 
-// ====== CONFIG ======
-const PLANE_SEGMENTS = 32;         // 32×32 grid – enough for smooth bend
-const SCROLL_STRENGTH = 0.0025;    // tune how much each scroll wheel tick affects the bulge
-const EASE = 0.085;                // how quickly the uniform eases toward the target value
+// ====== TUNABLE CONSTANTS ======
+const PLANE_SEGMENTS   = 32;   // mesh resolution (X & Y)
+const SCROLL_STRENGTH  = 0.003; // how much each wheel delta affects velocity
+const FRICTION         = 0.88; // decay applied every frame (snaps back when idle)
+const EASE             = 0.12; // smoothing for the shader uniform
 
 // ====== SHADERS ======
+// Vertex shader – warps the rectangle itself so the OUTLINE flexes.
+// Positive uS ⇒ bulge outward. Negative uS ⇒ pinch inward.
 const VERT = /* glsl */`
-  uniform float uS;                 // scroll strength (‑1…+1)
+  uniform float uS;           // current scroll strength (-1…+1)
   varying vec2 vUv;
   void main() {
     vUv = uv;
     vec3 pos = position;
 
-    // edgeInfluence: 1.0 at center, 0.0 at far corners
-    float influenceX = 1.0 - abs(uv.x - 0.5) * 2.0;
-    float influenceY = 1.0 - abs(uv.y - 0.5) * 2.0;
-    float factor = clamp(min(influenceX, influenceY), 0.0, 1.0);
+    // Centered UV (‑0.5…+0.5) – defines radial direction
+    vec2 c = vUv - 0.5;
+    float r = length(c) * 1.414;      // √2≈1.414 maps corner to ~1.0
 
-    // scale positions based on factor & scroll uniform (fabric bulge)
-    float scale = 1.0 + uS * factor;
-    pos.xy *= scale;
+    // Bulge amount tapers to 0.0 at the edges; strongest in centre
+    float amt = uS * (1.0 - r);
+
+    // Radial displacement: push/pull along vec2 c direction
+    pos.xy += c * amt;
+
+    // OPTIONAL slight Z push for parallax depth (comment if not desired)
+    // pos.z += abs(uS) * (1.0 - r) * 0.15;
 
     gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
   }
 `;
 
+// Fragment shader – retains original image‑space distortion so the texture ALSO warps.
 const FRAG = /* glsl */`
   precision highp float;
   uniform sampler2D uTex;
   uniform float uS;
   varying vec2 vUv;
   void main() {
-    // radial distortion for content
     vec2 uv = vUv - 0.5;
-    float dist = length(uv);
-    float strength = uS * 0.6;              // match vertex strength roughly
-    vec2 distorted = uv + uv * strength * (1.0 - dist);
+    float d = length(uv);
+    float strength = uS * 0.6;
+    vec2 distorted = uv + uv * strength * (1.0 - d);
     vec3 color = texture2D(uTex, distorted + 0.5).rgb;
-    gl_FragColor = vec4(color,1.0);
+    gl_FragColor = vec4(color, 1.0);
   }
 `;
 
 // ====== CLASS ======
 class BulgeEffect {
-  constructor(container) {
-    this.el = container;
-    this.imgURL = container.dataset.img;
+  constructor(el) {
+    this.el = el;
+    this.imgURL = el.dataset.img;
+
+    // Renderer
     this.renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    container.style.position = 'relative';
-    container.appendChild(this.renderer.domElement);
+    el.style.position = 'relative';
+    el.appendChild(this.renderer.domElement);
 
-    this.scene = new THREE.Scene();
+    // Scene / Camera
+    this.scene  = new THREE.Scene();
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 10);
     this.camera.position.z = 2;
 
-    // Geometry + subdivided grid
+    // Geometry & material
     const geom = new THREE.PlaneGeometry(2, 2, PLANE_SEGMENTS, PLANE_SEGMENTS);
-    const tex = new THREE.TextureLoader().load(this.imgURL, () => this.render());
+    const tex  = new THREE.TextureLoader().load(this.imgURL, () => this.render());
 
     this.material = new THREE.ShaderMaterial({
       uniforms: {
@@ -82,40 +90,47 @@ class BulgeEffect {
     this.mesh = new THREE.Mesh(geom, this.material);
     this.scene.add(this.mesh);
 
-    // state
-    this.targetS = 0;   // scroll target
-    this.currS   = 0;   // eased value
+    // Motion state
+    this.vel  = 0.0; // scroll velocity
+    this.curr = 0.0; // eased uniform value
 
-    // bindings
-    this.onScroll = this.onScroll.bind(this);
+    // Bindings
+    this.onWheel  = this.onWheel.bind(this);
     this.onResize = this.onResize.bind(this);
 
-    window.addEventListener('scroll', this.onScroll, { passive: true });
+    window.addEventListener('wheel', this.onWheel, { passive: true });
     window.addEventListener('resize', this.onResize);
 
     this.onResize();
     this.animate();
   }
 
+  // ---- Events ----
   onResize() {
-    const rect = this.el.getBoundingClientRect();
-    this.renderer.setSize(rect.width, rect.height);
+    const { width, height } = this.el.getBoundingClientRect();
+    this.renderer.setSize(width, height);
   }
 
-  onScroll(e) {
-    // Use wheel deltaY for direction-sensitive input (normalised)
-    const delta = e.deltaY || (window.scrollY - (this.lastScrollY||0));
-    this.lastScrollY = window.scrollY;
-    this.targetS += delta * SCROLL_STRENGTH;
-    // clamp the target to reasonable bounds to avoid runaway
-    this.targetS = Math.max(Math.min(this.targetS, 1), -1);
+  onWheel(e) {
+    this.vel += e.deltaY * SCROLL_STRENGTH;
+    // Clamp velocity to reasonable bounds
+    this.vel = Math.max(Math.min(this.vel, 1), -1);
   }
 
+  // ---- RAF ----
   animate() {
     requestAnimationFrame(() => this.animate());
-    // ease current toward target
-    this.currS += (this.targetS - this.currS) * EASE;
-    this.material.uniforms.uS.value = this.currS;
+
+    // Apply friction so effect snaps back when not scrolling
+    this.vel *= FRICTION;
+
+    // Ease shader uniform toward current velocity
+    this.curr += (this.vel - this.curr) * EASE;
+    this.material.uniforms.uS.value = this.curr;
+
+    // Don't waste GPU if negligible movement
+    if (Math.abs(this.curr) < 0.0001 && Math.abs(this.vel) < 0.0001) return;
+
     this.render();
   }
 
@@ -125,10 +140,14 @@ class BulgeEffect {
 }
 
 // ====== INIT ======
-function initBulges() {
+function initBulgeEffects() {
   document.querySelectorAll('[data-bulge]').forEach(el => {
     if (!el._bulge) el._bulge = new BulgeEffect(el);
   });
 }
 
-document.addEventListener('DOMContentLoaded', initBulges);
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initBulgeEffects);
+} else {
+  initBulgeEffects();
+}
