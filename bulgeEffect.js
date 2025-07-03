@@ -1,131 +1,127 @@
-// bulgeffect.js – v3.1  (GLSL compile‑safe, visible OUTWARD bulge)
-// – Removed vec2/float mixup that blanked the canvas
-// – Added safe normalize() guard
-// – Slightly smaller AMPLITUDE so mesh stays in view
-// Usage identical: <div data-bulge data-img="..."></div>
+/* bulge.js – v21  (adds fabric‑style canvas bend on top of original pinch/bulge)
+   ---------------------------------------------------------------------------
+   wheel ↓ (deltaY > 0)  →  **bulge OUT**
+   wheel ↑ (deltaY < 0)  →  **pinch IN**
+   Keeps original easing constants & feel, but now the rectangle itself flexes.
+*/
 
-import * as THREE from 'https://unpkg.com/three@0.163.0/build/three.module.js';
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.155/build/three.module.js';
 
-// === CONFIG ===
-const PLANE_SEGMENTS  = 40;     // grid density for outline smoothness
-const SCROLL_STRENGTH = 0.003;  // wheel delta multiplier
-const FRICTION        = 0.88;   // snap‑back speed (0–1)
-const EASE            = 0.12;   // uniform smoothing
-const AMPLITUDE       = 0.20;   // max radial offset in clip‑space units
+/* ===== feel constants (unchanged) ====================================== */
+const WHEEL_GAIN   = 0.004;  // wheel delta → target change  (positive ΔY bulges)
+const LIMIT        = 0.20;   // max absolute strength sent to shader
+const TARGET_DECAY = 0.60;   // how fast target fades toward 0  (0.60 = slow)
+const SMOOTH       = 0.10;   // how fast curr eases toward target (0.02–0.10)
+/* ====================================================================== */
 
-// === SHADERS ===
-const VERT = /* glsl */`
-  uniform float uS;           // eased scroll velocity (−1…+1)
+// geometry resolution for smooth outline bend
+const GRID_SEGMENTS = 40;    // 40×40 plane grid
+// how far (in clip‑space units) the rectangle may expand at max bulge
+const AMP = 0.15;            // keep ≤0.18 so it stays inside −1…+1 clip range
+
+const $     = (q,c=document)=>c.querySelectorAll(q);
+const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+const load  = url=>new Promise((res,rej)=>
+  new THREE.TextureLoader().setCrossOrigin('anonymous')
+    .load(url,res,undefined,rej));
+
+/* =====================  SHADERS  ======================================= */
+// Vertex shader – NEW: bends the mesh outline radially so the whole
+// rectangle balloons or caves in depending on scroll direction.
+const vert = /* glsl */`
+  uniform float uS;          // eased scroll strength (−LIMIT…+LIMIT)
   varying vec2 vUv;
-  void main() {
+  void main(){
     vUv = uv;
-    vec3 pos = position;
+    vec3 pos = position;            // −1…+1 square plane
 
-    // Radial coords centred at 0,0  (range −0.5 … +0.5)
-    vec2 c = vUv - 0.5;
+    // Centre‑based coords (−0.5…+0.5) so (0,0) = centre
+    vec2 c = uv - 0.5;
     float r = length(c);
 
-    // Weight fades to 0 at corners (√0.5 ≈ 0.707). Scale r so r=1 at corner.
+    // Weight: 1 at centre, 0 at corners (√2 ≈ 1.414 gives corners -> 0)
     float w = clamp(1.0 - r * 1.414, 0.0, 1.0);
 
-    // Outward direction; safe normalise (returns 0,0 when r=0)
+    // Safe outward dir (avoid div0 at centre)
     vec2 dir = (r > 0.00001) ? normalize(c) : vec2(0.0);
 
-    // Apply radial displacement
-    pos.xy += dir * uS * w * AMPLITUDE;
+    // Radial displacement.  uS>0 → bulge; uS<0 → pinch.
+    pos.xy += dir * uS * AMP * w;
 
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
-  }
-`;
+    gl_Position = vec4(pos, 1.0);
+  }`;
 
-const FRAG = /* glsl */`
-  precision highp float;
+// Fragment shader – unchanged from v20 (still does nice radial power warp)
+const frag = /* glsl */`
   uniform sampler2D uTex;
-  uniform float uS;
+  uniform float     uS;
   varying vec2 vUv;
-  void main() {
-    vec2 uv = vUv - 0.5;
-    float d = length(uv);
-    vec2 warped = uv + uv * uS * 0.5 * (1.0 - d);
-    gl_FragColor = texture2D(uTex, warped + 0.5);
-  }
-`;
+  void main(){
+    vec2 st  = vUv - 0.5;
+    float d  = length(st);
+    float a  = atan(st.y, st.x);
+    float r  = pow(d, 1.0 + uS * 2.0);
+    vec2 uv  = vec2(cos(a), sin(a)) * r + 0.5;
+    gl_FragColor = texture2D(uTex, uv);
+  }`;
 
-// === CLASS ===
-class BulgeEffect {
-  constructor(el) {
-    this.el     = el;
-    this.imgURL = el.dataset.img;
+/* =====================  INIT  ========================================= */
+async function init(el){
+  const url = el.dataset.img;
+  if(!url){ console.warn('[bulge] missing data-img:', el); return; }
 
-    // Renderer
-    this.renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    el.style.position = 'relative';
-    el.appendChild(this.renderer.domElement);
+  let tex;
+  try { tex = await load(url); }
+  catch { el.style.background = '#f88'; return; }   // pink block if load fail
+  tex.minFilter = THREE.LinearFilter;
 
-    // Scene & camera
-    this.scene  = new THREE.Scene();
-    this.camera = new THREE.OrthographicCamera(-1.2, 1.2, 1.2, -1.2, 0, 10);
-    this.camera.position.z = 2;
-
-    // Geometry & material
-    const geom = new THREE.PlaneGeometry(2, 2, PLANE_SEGMENTS, PLANE_SEGMENTS);
-    const tex  = new THREE.TextureLoader().load(this.imgURL, () => this.render());
-
-    this.material = new THREE.ShaderMaterial({
-      uniforms: { uTex: { value: tex }, uS: { value: 0.0 } },
-      vertexShader: VERT,
-      fragmentShader: FRAG,
-      transparent: true
-    });
-
-    this.mesh = new THREE.Mesh(geom, this.material);
-    this.scene.add(this.mesh);
-
-    // Motion state
-    this.vel  = 0.0; // raw velocity
-    this.curr = 0.0; // eased uniform value
-
-    // Events
-    window.addEventListener('wheel',  e => this.onWheel(e), { passive: true });
-    window.addEventListener('resize', () => this.onResize());
-
-    this.onResize();
-    this.animate();
-  }
-
-  // --- Handlers ---
-  onResize() {
-    const { width, height } = this.el.getBoundingClientRect();
-    this.renderer.setSize(width, height);
-  }
-
-  onWheel(e) {
-    this.vel += e.deltaY * SCROLL_STRENGTH;
-    this.vel = Math.max(Math.min(this.vel, 1), -1);
-  }
-
-  // --- RAF loop ---
-  animate() {
-    requestAnimationFrame(() => this.animate());
-
-    this.vel *= FRICTION;                       // decay toward 0
-    this.curr += (this.vel - this.curr) * EASE; // ease
-    this.material.uniforms.uS.value = this.curr;
-
-    if (Math.abs(this.vel) > 0.0001 || Math.abs(this.curr) > 0.0001) this.render();
-  }
-
-  render() { this.renderer.render(this.scene, this.camera); }
-}
-
-// === INIT ===
-function initBulgeEffects() {
-  document.querySelectorAll('[data-bulge]').forEach(el => {
-    if (!el._bulge) el._bulge = new BulgeEffect(el);
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uTex:{value:tex},  uS:{value:0} },
+    vertexShader  : vert,
+    fragmentShader: frag,
+    transparent   : true
   });
+
+  /* Scene setup */
+  const scene = new THREE.Scene();
+  const geom  = new THREE.PlaneGeometry(2, 2, GRID_SEGMENTS, GRID_SEGMENTS);
+  scene.add(new THREE.Mesh(geom, mat));
+  const cam   = new THREE.OrthographicCamera(-1,1,1,-1,0,1);
+
+  /* Renderer */
+  const ren = new THREE.WebGLRenderer({ alpha:true, antialias:true });
+  ren.setPixelRatio(devicePixelRatio);
+  const fit = () => ren.setSize(el.clientWidth||2, el.clientHeight||2, false);
+  window.addEventListener('resize', fit);
+  fit();
+
+  Object.assign(ren.domElement.style, {
+    position:'absolute', inset:0, width:'100%', height:'100%', zIndex:-1
+  });
+  el.style.position = el.style.position || 'relative';
+  el.appendChild(ren.domElement);
+
+  /* easing state */
+  let target = 0;   // nudged by wheel
+  let curr   = 0;   // value sent to shader
+
+  /* wheel handler – reversed sign (deltaY > 0 → bulge) */
+  window.addEventListener('wheel', e=>{
+    target += ( e.deltaY) * WHEEL_GAIN;   // positive sign kept
+    target  = clamp(target, -LIMIT, LIMIT);
+  }, { passive:true });
+
+  /* RAF loop */
+  (function loop(){
+    target *= TARGET_DECAY;                  // fade target toward 0
+    curr   += (target - curr) * SMOOTH;      // ease current to target
+    mat.uniforms.uS.value = curr;
+    ren.render(scene, cam);
+    requestAnimationFrame(loop);
+  })();
 }
 
-document.readyState === 'loading'
-  ? document.addEventListener('DOMContentLoaded', initBulgeEffects)
-  : initBulgeEffects();
+/* auto-init */
+window.addEventListener('DOMContentLoaded', () => {
+  $('div[data-bulge]').forEach(init);
+});
