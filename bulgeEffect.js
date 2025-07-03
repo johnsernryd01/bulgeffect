@@ -13,9 +13,9 @@ const GRID_SEGMENTS = 120;   // mesh resolution (verts per side)
 const AMP           = 0.35;  // 35 % of height bulge/pinch
 const LIMIT         = 0.35;  // uniform clamp (match AMP)
 const DEPTH_FACTOR  = 0.25;  // 0 = flat, 1 = deep parallax
-const WHEEL_GAIN    = 0.004; // wheel delta scalar
+const WHEEL_GAIN    = 0.01; // wheel delta scalar
 const TARGET_DECAY  = 0.60;  // how quickly target glides back
-const SMOOTH        = 0.10;  // easing current → target
+const SMOOTH        = 0.18;  // easing current → target
 /* =============================================================== */
 
 const $     = (q,c=document)=>c.querySelectorAll(q);
