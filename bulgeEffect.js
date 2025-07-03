@@ -1,19 +1,21 @@
-/* bulge.js – v26a  (smooth vertical bow + subtle 3-D depth)
+/* bulge.js – v26-final  (smooth vertical bow + subtle 3-D depth)
    ----------------------------------------------------------------
-   wheel ↓  →  outward bow (bulge) – top & bottom lift toward camera
-   wheel ↑  →  inward cave (pinch) – top & bottom sink away
+   • wheel ↓  → outward bow (bulge) – rectangle lifts toward camera
+   • wheel ↑  → inward cave (pinch) – rectangle sinks away
+   • No clipping in either direction (near/far planes widened)
 */
 
+/* ===== import three.js (ESM) ===== */
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.155/build/three.module.js';
 
-/* ======= FEEL CONSTANTS ========================================= */
+/* ===== FEEL CONSTANTS (tweak here) ============================== */
 const GRID_SEGMENTS = 120;   // mesh resolution (verts per side)
-const AMP           = 0.35;  // 0.35 ≈ 35 % of height bow
-const LIMIT         = 0.35;  // shader uniform clamp (match AMP 1-to-1)
-const DEPTH_FACTOR  = 0.4;   // 0 = flat, 1 = deep parallax
+const AMP           = 0.35;  // 35 % of height bulge/pinch
+const LIMIT         = 0.35;  // uniform clamp (match AMP)
+const DEPTH_FACTOR  = 0.25;  // 0 = flat, 1 = deep parallax
 const WHEEL_GAIN    = 0.004; // wheel delta scalar
-const TARGET_DECAY  = 0.60;  // target → 0 decay per frame
-const SMOOTH        = 0.10;  // ease current toward target
+const TARGET_DECAY  = 0.60;  // how quickly target glides back
+const SMOOTH        = 0.10;  // easing current → target
 /* =============================================================== */
 
 const $     = (q,c=document)=>c.querySelectorAll(q);
@@ -22,27 +24,27 @@ const load  = url=>new Promise((res,rej)=>
   new THREE.TextureLoader().setCrossOrigin('anonymous')
     .load(url,res,undefined,rej));
 
-/* -------- GLSL SHADERS ----------------------------------------- */
+/* ===== GLSL SHADERS ============================================ */
 const vert = /* glsl */`
-  uniform float uS;        // eased scroll strength
+  uniform float uS;        // eased scroll strength (−LIMIT…+LIMIT)
   uniform float uAmp;      // amplitude in clip-space units
-  uniform float uDepth;    // depth multiplier
+  uniform float uDepth;    // Z-parallax multiplier
   varying vec2 vUv;
 
   void main () {
     vUv = uv;
-    vec3 pos = position;               // Plane vertices in −1…+1
+    vec3 pos = position;               // plane vertices (−1…+1)
 
-    /* Weight strongest at edges, 0 at centre (smoothstep for roundness) */
+    /* vertical weight: 0 at centre, 1 at edges (smoothstep for roundness) */
     float w = smoothstep(0.0, 1.0, abs(pos.y));
 
-    /* Vertical bow (top & bottom) */
+    /* bend in Y */
     pos.y += sign(pos.y) * uS * uAmp * w;
 
-    /* Optional horizontal spread keeps curve looking circular */
+    /* optional horizontal spread */
     pos.x *= 1.0 + uS * 0.18 * w;
 
-    /* SUBTLE DEPTH: bulge lifts toward camera, pinch sinks away */
+    /* depth parallax: bulge → toward camera (−Z), pinch → away (+Z) */
     pos.z += -uS * uAmp * uDepth * w;
 
     gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
@@ -63,7 +65,7 @@ const frag = /* glsl */`
     gl_FragColor = texture2D(uTex, uv);
   }
 `;
-/* --------------------------------------------------------------- */
+/* =============================================================== */
 
 async function init (el) {
   const url = el.dataset.img;
@@ -73,7 +75,7 @@ async function init (el) {
   el.style.position = el.style.position || 'relative';
   el.style.overflow = 'visible';
 
-  /* texture */
+  /* load texture */
   let tex;
   try { tex = await load(url); }
   catch { el.style.background = '#f88'; return; }   // pink block if load fails
@@ -97,9 +99,10 @@ async function init (el) {
   const plane = new THREE.PlaneGeometry(2, 2, GRID_SEGMENTS, GRID_SEGMENTS);
   scene.add(new THREE.Mesh(plane, mat));
 
-  /* camera – widen by AMP so displaced verts stay in view */
+  /* camera – widen frustum & depth so nothing clips */
   const cam = new THREE.OrthographicCamera(
-    -1 - AMP, 1 + AMP, 1 + AMP, -1 - AMP, 0, 2
+    -1 - AMP, 1 + AMP, 1 + AMP, -1 - AMP,
+    -AMP * 2,  AMP * 2 + 2           // near, far
   );
 
   /* renderer */
@@ -130,7 +133,7 @@ async function init (el) {
 
   /* RAF loop */
   (function loop () {
-    target *= TARGET_DECAY;          // glide back toward 0
+    target *= TARGET_DECAY;          // glide target toward 0
     curr   += (target - curr) * SMOOTH;
     mat.uniforms.uS.value = curr;
     ren.render(scene, cam);
@@ -138,7 +141,7 @@ async function init (el) {
   })();
 }
 
-/* auto-init on div[data-bulge] */
+/* auto-init on every <div data-bulge data-img="..."> */
 document.addEventListener('DOMContentLoaded', () => {
-  document.querySelectorAll('div[data-bulge]').forEach(init);
+  $('div[data-bulge]').forEach(init);
 });
