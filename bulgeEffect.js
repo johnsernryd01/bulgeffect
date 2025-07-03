@@ -1,41 +1,43 @@
-// bulgeffect.js – v3 (radial displacement fix)
-// Fabric‑style bulge now visibly pushes OUT; pinch still pulls in.
+// bulgeffect.js – v3.1  (GLSL compile‑safe, visible OUTWARD bulge)
+// – Removed vec2/float mixup that blanked the canvas
+// – Added safe normalize() guard
+// – Slightly smaller AMPLITUDE so mesh stays in view
+// Usage identical: <div data-bulge data-img="..."></div>
 
 import * as THREE from 'https://unpkg.com/three@0.163.0/build/three.module.js';
 
-// ===== CONFIG =====
-const PLANE_SEGMENTS  = 40;    // finer grid for smoother curve
-const SCROLL_STRENGTH = 0.003; // wheel delta multiplier
-const FRICTION        = 0.88;  // snap‑back rate
-const EASE            = 0.12;  // uniform easing
-const AMPLITUDE       = 0.25;  // max outward offset in clip‑space units (0‑1)
+// === CONFIG ===
+const PLANE_SEGMENTS  = 40;     // grid density for outline smoothness
+const SCROLL_STRENGTH = 0.003;  // wheel delta multiplier
+const FRICTION        = 0.88;   // snap‑back speed (0–1)
+const EASE            = 0.12;   // uniform smoothing
+const AMPLITUDE       = 0.20;   // max radial offset in clip‑space units
 
-// ===== SHADERS =====
-// Vertex shader – true radial displacement. Centre stays, everything else moves
-// along its own outward normal so the outline visibly bows.
+// === SHADERS ===
 const VERT = /* glsl */`
-  uniform float uS;           // eased velocity (−1 … +1)
+  uniform float uS;           // eased scroll velocity (−1…+1)
   varying vec2 vUv;
   void main() {
     vUv = uv;
-    vec3 pos = position;      // plane vertex −1…+1 after modelViewMatrix
+    vec3 pos = position;
 
-    // UV centre‑based coords (−.5…+.5)
+    // Radial coords centred at 0,0  (range −0.5 … +0.5)
     vec2 c = vUv - 0.5;
     float r = length(c);
 
-    // Weight fades to 0 at ~corner radius .707 (half‑diagonal)
-    float w = clamp(1.0 - r * 1.42, 0.0, 1.0); // corners get 0, centre 1
-    vec2 dir = normalize(c + 1e-6);           // outward unit vector
+    // Weight fades to 0 at corners (√0.5 ≈ 0.707). Scale r so r=1 at corner.
+    float w = clamp(1.0 - r * 1.414, 0.0, 1.0);
 
-    // Radial offset – positive uS pushes out, negative pulls in
+    // Outward direction; safe normalise (returns 0,0 when r=0)
+    vec2 dir = (r > 0.00001) ? normalize(c) : vec2(0.0);
+
+    // Apply radial displacement
     pos.xy += dir * uS * w * AMPLITUDE;
 
     gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
   }
 `;
 
-// Fragment shader – same radial warp for texture for consistency
 const FRAG = /* glsl */`
   precision highp float;
   uniform sampler2D uTex;
@@ -44,15 +46,15 @@ const FRAG = /* glsl */`
   void main() {
     vec2 uv = vUv - 0.5;
     float d = length(uv);
-    vec2 warped = uv + uv * uS * 0.55 * (1.0 - d);
+    vec2 warped = uv + uv * uS * 0.5 * (1.0 - d);
     gl_FragColor = texture2D(uTex, warped + 0.5);
   }
 `;
 
-// ===== CLASS =====
+// === CLASS ===
 class BulgeEffect {
   constructor(el) {
-    this.el = el;
+    this.el     = el;
     this.imgURL = el.dataset.img;
 
     // Renderer
@@ -61,7 +63,7 @@ class BulgeEffect {
     el.style.position = 'relative';
     el.appendChild(this.renderer.domElement);
 
-    // Scene & camera (slightly larger frustum for overshoot)
+    // Scene & camera
     this.scene  = new THREE.Scene();
     this.camera = new THREE.OrthographicCamera(-1.2, 1.2, 1.2, -1.2, 0, 10);
     this.camera.position.z = 2;
@@ -81,10 +83,10 @@ class BulgeEffect {
     this.scene.add(this.mesh);
 
     // Motion state
-    this.vel  = 0.0;
-    this.curr = 0.0;
+    this.vel  = 0.0; // raw velocity
+    this.curr = 0.0; // eased uniform value
 
-    // Event bindings
+    // Events
     window.addEventListener('wheel',  e => this.onWheel(e), { passive: true });
     window.addEventListener('resize', () => this.onResize());
 
@@ -107,25 +109,17 @@ class BulgeEffect {
   animate() {
     requestAnimationFrame(() => this.animate());
 
-    // Decay velocity → snap back
-    this.vel *= FRICTION;
-
-    // Ease toward current velocity
-    this.curr += (this.vel - this.curr) * EASE;
+    this.vel *= FRICTION;                       // decay toward 0
+    this.curr += (this.vel - this.curr) * EASE; // ease
     this.material.uniforms.uS.value = this.curr;
 
-    // Redraw when active
-    if (Math.abs(this.vel) > 0.0001 || Math.abs(this.curr) > 0.0001) {
-      this.render();
-    }
+    if (Math.abs(this.vel) > 0.0001 || Math.abs(this.curr) > 0.0001) this.render();
   }
 
-  render() {
-    this.renderer.render(this.scene, this.camera);
-  }
+  render() { this.renderer.render(this.scene, this.camera); }
 }
 
-// ===== INIT =====
+// === INIT ===
 function initBulgeEffects() {
   document.querySelectorAll('[data-bulge]').forEach(el => {
     if (!el._bulge) el._bulge = new BulgeEffect(el);
